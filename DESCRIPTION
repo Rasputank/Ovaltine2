@@ -1,0 +1,30 @@
+Package: simScores
+Title: Similarity Scores for Baseball Players
+Version: 0.1
+Authors@R: person("Kevin", "Ferris", email = "kevin.ferris10@gmail.com", role = c("aut", "cre"))
+Description: Provides methods to take raw baseball statistics , calculate
+    MLEs, then build, run, and deploy a shiny app which identifies players
+    with similar statistics.  It is designed for a user with no R background,
+    and mostly uses csv files and shiny apps to interact with users.  However,
+    users with some background in R should be able to access and modify the
+    apps and data.  See the vignettes for examples.
+Depends:
+    R (>= 3.1.0),
+    arm (>= 1.7-07),
+    dplyr (>= 0.3.0.2)
+Imports:
+    stringr (>= 0.6.2),
+    lubridate (>= 1.3.3),
+    tidyr (>= 0.1),
+    XML (>= 3.98-1.1),
+    shiny (>= 0.10.2.1),
+    shinyapps (>= 0.3.54),
+    assertthat (>= 0.1),
+    lme4 (>= 1.1-7),
+    ggplot2 (>= 1.0.0)
+License: file LICENSE
+LazyData: true
+Suggests:
+    knitr,
+    cluster (>= 1.15.2)
+VignetteBuilder: knitr

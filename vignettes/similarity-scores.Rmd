@@ -1,0 +1,487 @@
+---
+title: "Calculating Similarity Scores"
+author: "Kevin Ferris"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Calculating Similarity Scores}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\usepackage[utf8]{inputenc}
+---
+
+```{r setup, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(warning = F, 
+                      comment = "#>", 
+                      collapse = TRUE, 
+                      tidy = F)
+options(digits = 3)
+```
+
+
+The primary purpose of this package is the calculation of similarity scores for a focus player.  These scores are intended to identify players with similar statistics to the focus player over a specified timeframe.  This vignette will walk through an example of calculating similarity scores for Domonic Brown from ages 24 to 26.  
+
+# Brief Overview
+
+After adjusting for park, year, and level effects (see the "How the Updates Work" vignette), Domonic Brown's statline from 2012-2014 (his age 24-26 seasons) looks like
+
+```{r brown-statline, echo=FALSE, message=FALSE}
+setwd("N:/Apps/simScoresApp")
+load("b-comparison-app/bat_simscore_data.RData")
+library(simScores)
+age_grp %>% 
+  filter(name == "Brown; Domonic L.",age >= 24, age <= 26) %>% 
+  group_by(name) %>% 
+  summarise_each(funs(sum), g:k) %>% 
+  mutate(avg = (x1b + x2b + x3b + hr) / ab, 
+         obp = (x1b + x2b + x3b + hr + bb + hbp) / pa, 
+         slg = (x1b + 2*x2b + 3*x3b + 4*hr) / ab)
+```
+
+The goal of these similarity scores is to find players with similar statlines to Brown.  So we aggregate batting statlines for other players from their age 24-26 seasons.
+
+```{r other-statlines, echo=FALSE}
+weights <- c(position = .05, pa = .9, bb.perc = .66, k.perc = .84, iso = .84, babip = .23, obp = .92)
+dat <- age_grp %>% 
+  filter(age >= 24, age <= 26) %>% 
+  group_by(name) %>% 
+  summarise_each(funs(sum), g:k) %>% 
+  mutate(avg = (x1b + x2b + x3b + hr) / ab, 
+         obp = (x1b + x2b + x3b + hr + bb + hbp) / pa, 
+         slg = (x1b + 2*x2b + 3*x3b + 4*hr) / ab) %>% 
+  left_join(age_comps("Brown; Domonic L.", age_grp, weights, 3, "bat")$table) %>% 
+  filter(pa > 500)
+dat %>% select(-mlbid, -years, -score)
+```
+
+It is clear from just glancing at these statlines that Dustin Ackley is more similar to Brown than Mitchell Abeita.  However, there are over a thousand ballplayers who have played between their age 24 and 26 seasons.  Visually comparing each statline to Brown's would take too long and would be imprecise.  So we calculate similarity scores which compare each player's statline to Brown.  Players with higher scores have statistics that are more similar to Brown.
+
+```{r other-scores, echo=FALSE}
+dat %>% select(name, score)
+```
+
+This package implements two ways of calculating similarity scores.  
+
+1) The first aggregates all data over the specified timeframe then finds similarity scores based on the aggregated data.  This is the process used by the `age_comps` function.
+
+2) The second aggregates data over the timeframe **at each level**, calculates similarity scores at each level then averages the scores across  the different levels.  This is implemented by the `level_comps` function.  
+
+# Scores Using `age_comps()`
+
+The data used by this method are obtained using other functions in this package (see the "How the Updates Work" vignette).  These data are located in the `age_grp` data.frame in the "bat_simscore_data.RData" file in the "b-comparison-app" folder.
+
+```{r load-data}
+setwd("N:/Apps/simScoresApp")
+load("b-comparison-app/bat_simscore_data.RData")
+```
+
+We'll also need to load the `simScores` package that has been put together by the Phillies to calculate these scores.  If this has not been installed on your computer, contact Scott Freedman for support.  This loads the `dplyr` package as well.  The `dplyr` package provides most of the data manipulation functions that are used to calculate the similarity scores.  The chaining operator `%>%` also comes from the `dplyr` package.  These functions are explained in the "Introduction to dplyr" vignette.  This can be viewed by running `vignette("introduction", package = "dplyr")` in R.
+
+```{r load-package, message=FALSE}
+library(simScores)
+```
+
+## Aggregating over Timeframe
+
+Let's begin by taking a look at the data.
+
+```{r view-data}
+age_grp
+```
+
+There is a bunch of biographical information (the mlbid:year columns), followed by the player's age and the year that the player had these statistics.  Next is the player's primary position, his professional experience, and the number of days he spent on the DL in that year.  These are followed by the player's batting statistics for that year.  
+
+These statistics have been summarized by year so that, even though Bobby Abreu played 98 games for the Phillies and 58 for the Yankees in 2006, there is only one row for Abreu in 2006 which shows he played $98+58=156$ games.
+
+```{r abreu-games}
+age_grp %>% select(mlbid, name, year, g, pa, hr)
+```
+
+Additionally, note that home runs are a decimal.  This is because these statistics have been adjusted for park and league effects.
+
+### Filtering by Age
+
+For this example, we only want to compare player to Domonic Brown based on his age 24 to 26 seasons.  So the first step of the `age_comps` function is to remove all entries which are not associated with the specified time frame.
+
+```{r filter-age}
+filtered_dat <- age_grp %>% filter(age >= 24, age <= 26)
+filtered_dat %>% select(mlbid, name, year, g, pa, hr)
+```
+
+The original data had `r nrow(age_grp)` rows, but the `filtered_dat` object only has `r nrow(filtered_dat)` rows because we have removed everything where the age wasn't between 24 and 26.
+
+### Grouping 
+
+To compare players to Domonic Brown based on their entire performance from 24 to 26, we need to summarize their statistics over that timeframe.  In R, this is accomplished by grouping the biographical info (because it is constant for each player), then summarizing the statistics.  To group, we use the `group_by` function.
+
+```{r group-player}
+grouped_dat <- filtered_dat %>% 
+  group_by(mlbid, name, height, weight, bats, throws, roo)
+```
+
+### Summarizing
+
+We summarize each players statistics using the `summarise` function, then remove the groupings.
+
+```{r summarizing}
+summed_dat <- grouped_dat %>% 
+  summarise(
+    years = paste(min(year), max(year), sep = ":"), # years they played 
+    position = position[which.max(pa)], # the position they played the most
+    experience = last(experience), # most experience
+    dl.days = sum(dl.days), # the sum of all the days on the DL
+    g = sum(g),
+    pa = sum(pa),
+    ab = sum(ab),
+    x1b = sum(x1b),
+    x2b = sum(x2b),
+    x3b = sum(x3b),
+    hr = sum(hr),
+    h = sum(x1b + x2b + x3b + hr),
+    bb = sum(bb + hbp),
+    k = sum(k)
+  ) %>% 
+  ungroup()
+summed_dat %>% select(mlbid, name, years, g, pa, hr)
+```
+
+Felipe Lopez was 25 in 2005 and 26 in 2006 so he had two entries in `filtered_dat`.  In `summed_data` he only has one entry which shows his combined statistics for 2005 and 2006.
+
+### Adding Statistics
+
+We then calculate statistics like OBP, ISO, etc. for each player.
+
+```{r mutating}
+mutated_dat <- summed_dat %>%
+      mutate(
+        pa.g = pa / g, 
+        obp = (h + bb) / pa,
+        bb.perc = bb / pa * 100,
+        k.perc = k / pa * 100,
+        iso = (x2b + 2*x3b + 3*hr) / (pa - bb),
+        babip = (x1b + x2b + x3b) / (pa - bb - k - hr)
+      ) 
+mutated_dat %>% select(mlbid, name, years, g, pa, hr, obp, iso)
+```
+
+## Calculating Scores
+
+Now that the data are summarized so there is one row for each player, the statistics for each player can be compared to the focus player.  This is done by passing the data, the name of the focus player, and the weights for each statistic to the `calcScores2` function.  `weights` is a named vector which specifies how much each statistics matters when comparing players.
+
+```{r calc-scores}
+weights <- c(position = .05, pa = .9, bb.perc = .66, k.perc = .84, iso = .84, babip = .23, obp = .92)
+scores <- calcScores2(mutated_dat, "Brown; Domonic L.", weights)
+```
+
+### Methodology
+
+This function calculates similarity scores by finding the dissimilarity between each player's statistics and the focus player's statistics.  This gets us a measure of the difference between each player and the focus player.  A similarity score is then defined as $similarity = 1000 * (1-dissimilarity)$.
+
+Dissimilarities are calculated using Gower's distance metric.  Gower's distance metric was chosen because it can handle categorical and missing data.  The formula is not presented here, but it can be found in the help page for the `daisy` function in the `cluster` package or in Gower's paper: Gower, J. C. (1971) A general coefficient of similarity and some of its properties, Biometrics 27, 857–874.
+
+### The `calcScores2` Function
+
+This function serves as a wrapper for the `findDiffs2` function.  `calcScores2` processes the data.  Processed data are passed to `findDiffs2` to calculate the dissimilarities.
+
+```{r fp-stats}
+stats_fp <- mutated_dat %>% filter(name == "Brown; Domonic L.")
+stats_fp %>% select(mlbid, name, years, g, pa, hr, obp, iso)
+```
+
+The `weights` vector contains the names of all the statistics that are used for the comparison.  So we remove all the columns which are not named in `weights`.
+
+```{r comp-stats}
+stats_fp <- stats_fp[, names(weights)]
+stats_fp
+stats_comps <- mutated_dat[, names(weights)]
+stats_comps
+```
+
+This information is then passed to the `findDiffs2` function to obtain the dissimilarity between each player and the focus player.
+
+```{r find-diffs}
+diffs <- findDiffs2(stats_fp, stats_comps, weights)
+```
+
+### The `findDiffs2` Function
+
+Here, a broad overview of the methodology is provided rather than the specifics.  For details of how the function is implemented, see the help page for `findDiffs2`.
+
+A data.frame is created with identical rows.  Each row contains the statistics for the focus player.  The dimensions for this data.frame are equal to the dimensions of the `stats_comps` data.frame.
+
+```{r fp-matrix}
+head(stats_fp)
+dat_fp <- data.frame(
+  matrix(NA, nrow = nrow(stats_comps), ncol = ncol(stats_comps))
+) %>% setNames(names(stats_comps))
+for(i in 1:nrow(stats_comps)) dat_fp[i, ] <- stats_fp
+head(dat_fp)
+dim(dat_fp) == dim(stats_comps)
+```
+
+It then uses Gower's formula to calculate the dissimilarity between the $i^{th}$ row of `dat_fp` and the $i^{th}$ row of `stats_comps`.  This is the dissimilarity for the $i^{th}$ player.  It then returns this vector of dissimilarities.
+
+```{r diffs}
+diffs <- findDiffs2(stats_fp, stats_comps, weights)
+head(diffs)
+```
+
+### Finishing
+
+The `calcScores2` function takes this vector, and turns it into similarity scores.  Similarity scores are on a 0-1000 scale where 1000 implies identical statistics (so the focus player's similarity score with himself is 1000).  
+
+$$similarity = 1000 * (1 - dissimilarity)$$
+
+```{r print-scores}
+scores <- calcScores2(mutated_dat, "Brown; Domonic L.", weights)
+scores %>% arrange(desc(score))
+```
+
+This is the information returned to the `age_comps` function.  This information is then merged with `mutated_dat` to get the years when each player was between 24 and 26.
+
+```{r adding-info,message=FALSE}
+scores %>% 
+  inner_join(mutated_dat %>% select(mlbid, name, years)) %>% 
+  arrange(desc(score)) %>% 
+  select(mlbid, name, years, score)
+```
+
+## Using the `age_comps` Function
+
+The `age_comps` function performs this entire process.  It requires three arguments and has two optional arguments:
+
+1) the name of the focus player (required)
+2) the data.frame of statistics (required)
+3) the weights to be used (required)
+4) the time frame for comparison (defaults to most recent three years)
+5) whether the focus player is a batter or pitcher (defaults to batter)
+It returns the scores comparing each player in the `age_grp` data to the focus player over the timeframe.  It also returns the timeframe for later use.
+
+```{r age-comps}
+age_comps("Brown; Domonic L.", age_grp, weights, 3, "bat")
+```
+
+## Summary
+
+The process to calculate similarity scores using the `age_comps` function can be broken into the following steps
+
+1) filter the data over the specified timeframe
+2) summarize the statistics for each player
+3) add additional statistics for each player
+4) calculate dissimilarities comparing the statistics for each player to the statistics for the focus player
+5) calculate similarity scores from the dissimilarities
+
+# Similarity Scores Using `level_comps`
+
+This function follows the same general steps as the `age_comps` function.  However, in `age_comps`, similarity scores were calculated based on the focus player's entire performance over the specified timeframe.  In the `level_comps` function, similarity scores are calculated at level the focus player played at during the specified timeframe.  Then each player's scores are averaged together.
+
+## Aggregating Over Timeframe by Level
+
+For this function, the `level_grp` data are used.  These data are in a similar format to the `age_grp` data.  The difference is the `level` column.  Each row in this data.frame contains the statistics for a player at a single level in a year.  
+
+In 2012, Domonic Brown played at the AAA and MLB levels.  In the `age_grp` data, his statistics across these levels were summed together.
+
+```{r dbrown-age}
+age_grp %>% 
+  filter(name == "Brown; Domonic L.", year == 2012) %>% 
+  select(mlbid, name, year, g, pa, hr)
+```
+
+In the `level_grp` data however, these are recorded as two separate entries.  
+
+```{r dbrown-level}
+level_grp %>% 
+  filter(name == "Brown; Domonic L.", year == 2012) %>% 
+  select(mlbid, name, year, level, g, pa, hr)
+```
+
+### Filtering
+
+As before, the data are filtered by age.  We also remove all levels at which the focus player did not play.  For example, between 2012 and 2014, Domonic Brown only played at AAA and MLB so rows corresponding to all other levels are removed.
+
+```{r filter-age-level}
+filtered_dat2 <- level_grp %>% filter(age >= 24, age <= 26, level %in% c("AAA", "MLB"))
+filtered_dat2 %>% select(mlbid, name, year, level, g, pa, hr)
+```
+
+### Grouping 
+
+This time, when grouping, we want to make sure that we group by level as well.
+
+```{r group-level}
+grouped_dat2 <- filtered_dat2 %>% 
+  group_by(mlbid, name, height, weight, bats, throws, roo, level)
+```
+
+### Summarizing and Adding Statistics
+
+Summarizing counting statistics and creating new statistics at each level occurs in the same manner as before.
+
+```{r summarise2}
+mutated_levels <- grouped_dat2 %>% 
+  summarise(
+    years = paste(min(year), max(year), sep = ":"),
+    position = position[which.max(pa)], # the position they played the most
+    experience = last(experience), # most experience
+    dl.days = sum(dl.days), # the sum of all the days on the DL
+    g = sum(g),
+    pa = sum(pa),
+    ab = sum(ab),
+    x1b = sum(x1b),
+    x2b = sum(x2b),
+    x3b = sum(x3b),
+    hr = sum(hr),
+    h = sum(x1b + x2b + x3b + hr),
+    bb = sum(bb + hbp),
+    k = sum(k)
+    ) %>% 
+  ungroup() %>% 
+  mutate(
+    pa.g = pa / g, 
+    obp = (h + bb) / pa,
+    bb.perc = bb / pa * 100,
+    k.perc = k / pa * 100,
+    iso = (x2b + 2*x3b + 3*hr) / (pa - bb),
+    babip = (x1b + x2b + x3b) / (pa - bb - k - hr)
+    ) 
+mutated_levels %>% select(mlbid, name, level, years, g, pa, hr, obp, iso)
+```
+
+## Calculating Scores
+
+We are going to calculate similarity scores at each level for each player in the `mutated_levels` data.  This means that because Michael Cuddyer played at both AAA and MLB between ages 24 and 26, we will have two similarity scores for Michael Cuddyer: one comparing his AAA stats to Domonic Brown's AAA stats, and one comparing their MLB stats.  To get one overall similarity score comparing Brown and Cuddyer across levels, we will take a weighted average of these two scores.
+
+### Weights for Each Level
+
+The weights for averaging score by level will be the amount of playing time for the focus player at each level.  Since Domonic Brown spent much more time in the majors from age 24 to 26, similarity will be much more important in the majors.
+
+```{r level-weights}
+level_wts <- mutated_levels %>% 
+  filter(name == "Brown; Domonic L.") %>% 
+  select(level, pa) %>% 
+  setNames(c("level", "wt"))
+level_wts
+```
+
+So similarity in the majors will be about 5 times as important as similarity in the minors.
+
+### Scores at Each Level
+
+The `calcScores2` function can be used to calculate scores once again.  This time we have to make sure to calculate scores at each level.  This can be done by using the `group_by` and `do` functions in R.
+
+```{r level-scores, warning=FALSE}
+level_scores <- mutated_levels %>% 
+  group_by(level) %>% 
+  do(calcScores2(., "Brown; Domonic L.", weights)) %>% 
+  ungroup() 
+level_scores %>% arrange(mlbid)
+```
+
+Some players, such as Adrian Beltre, did not play at both levels.  Beltre only played at MLB so, to make the comparison simple, his AAA score is set as the smallest observed AAA score.  This says that Adrian Beltre's AAA stats are as different as possible from Domonic Brown's AAA stats.
+
+605 was the lowest similarity score we obtained at the AAA level so Beltre's AAA score is set to 605.
+
+```{r missing-levels}
+level_scores <- level_scores %>% 
+  tidyr::spread(level, score) %>%
+  mutate_each(funs(x = ifelse(is.na(.), min(., na.rm = T), .)), -name) %>%
+  tidyr::gather(level, score, -mlbid, -name)
+level_scores %>% arrange(mlbid)
+```
+
+### Averaging Scores
+
+The scores are joined with the `level_wts`, then the scores are averaged by player.
+
+```{r average-score, message=FALSE}
+avg_scores <- level_scores %>% 
+  inner_join(level_wts) %>% 
+  group_by(mlbid, name) %>% 
+  summarise(score = weighted.mean(score, wt)) %>% 
+  ungroup() %>% 
+  arrange(desc(score))
+avg_scores
+```
+
+Finally, the years each player was 24-26 are added for completeness.
+
+```{r final-scores, message=FALSE}
+filtered_dat2 %>% 
+  filter(mlbid %in% avg_scores$mlbid) %>% #removing players who don't have a score
+  group_by(mlbid) %>% 
+  summarise(years = paste(min(year), max(year), sep = ":")) %>% 
+  inner_join(avg_scores) %>% 
+  select(name, years, score) %>% 
+  arrange(desc(score))
+```
+
+## Using the `level_comps` function.
+
+This entire processed is implemented in the `level_comps` function.  The function uses the same arguments as `age_comps`.  It only returns the similarity scores.
+
+```{r level-comps}
+level_comps("Brown; Domonic L.", level_grp, weights)
+```
+
+## Summary
+
+The steps for this function are very similar to the steps for the `age_comps()` function.  The differences are noted in **bold**
+
+1) filter the data over the specified timeframe **and over the focus player's levels**
+2) summarize the statistics for each player
+3) add additional statistics for each player
+**3.5) calculate focus player's playing time at each level**
+4) calculate dissimilarities comparing the statistics for each player to the statistics for the focus player **at each level**
+5) calculate similarity scores from the dissimilarities
+6) **average the similarity scores by level**
+
+# Other Examples
+
+## Chase Utley
+
+Similarity scores for Chase Utley based on the last 5 years.
+
+```{r utley-five}
+level_comps("Utley; Chase C.", level_grp, weights, 5)
+```
+
+Similarity scores for Chase Utley from age 27 to 29.
+
+```{r utley-27-29}
+level_comps("Utley; Chase C.", level_grp, weights, c(27, 29))
+```
+
+## Pitchers 
+
+To calculate similarity scores, the `pit_simscores_data.RData` file in the p-comparison-app folder must be loaded.  The weights for pitchers must also be specified.
+
+```{r pit-load}
+setwd("H:/simScoresApp") # or wherever the apps folder is located
+load("p-comparison-app/pit_simscore_data.RData")
+p_weights <- c(throws = .01, ip = .62, k.9 = .83, bb.9 = .83, hr.9 = .91, babip = .55, fip = .35)
+```
+
+Similarity scores for David Buchanan based on the last three years.  It must be specified that we are now comparing pitchers.
+
+```{r buch-3}
+level_comps("Buchanan; David A.", level_grp, p_weights, type = "pit")
+```
+
+Using `age_comps` for Buchanan
+
+```{r buch-age}
+age_comps("Buchanan; David A.", level_grp, p_weights, type = "pit")
+```
+
+
+Similarity scores for Cole Hamels based on the last two years.
+
+```{r hamels-2}
+level_comps("Hamels; Cole M.", level_grp, p_weights, years = 2, type = "pit")
+```
+
+Similarity scores for Cole Hamels from age 24 to 26
+
+```{r hamels-24-26}
+level_comps("Hamels; Cole M.", level_grp, p_weights, years = c(24, 26), type = "pit")
+```
+

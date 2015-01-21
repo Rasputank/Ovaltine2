@@ -1,0 +1,271 @@
+---
+title: "How the Updates Work"
+author: "Kevin Ferris"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{How the Updates Work}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\usepackage[utf8]{inputenc}
+---
+
+```{r startup, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(comment = "#>", 
+                      collapse = TRUE, 
+                      tidy = F, 
+                      fig.height = 4, 
+                      fig.width = 6, 
+                      fig.align = "center", 
+                      message = F, 
+                      warning = F)
+options(digits = 2)
+set.seed(42)
+```
+
+This vignette discusses how the data are processed each day when updating the apps.  The goal is to scale the statistics that a player actually accumulated to account for differences in parks, levels, and run scoring environments.  So the update process each day follows the following steps:
+
+1) download and clean American and Japanese statistics
+2) adjust for park effects with park factors
+3) adjust for year effects with year factors
+4) adjust for level effects with MLEs
+5) record missing data
+6) additional processing for Shiny apps
+
+## 1) Download and Clean Data
+
+Data processing is always dependent on the source of the data.  Since the user may not always be using data obtained from PIA or Baseball-Reference, I will not describe the data cleaning process here.  
+
+Once the data from different sources have been cleaned and all follow the same format, they can be combined into one large data set.  
+
+```{r get-data}
+library(simScores)
+library(dplyr) # for data wrangling functions
+setwd("N:/Apps/simScoresApp/data/1-cleaned/batters") # cleaned batting data
+b_dat <- list.files() %>%    # identify the names of all the clean files
+  lapply(function(x) read.csv(x) %>% mutate(MLBID = as.character(MLBID))) %>% # load them into R
+  rbind_all() %>%          # stack them on top of each other
+  tbl_df()
+b_dat
+setwd("N:/Apps/simScoresApp/data/1-cleaned/pitchers") # cleaned pitching data
+p_dat <- list.files() %>%    # identify the names of all the clean files
+  lapply(function(x)read.csv(x) %>% mutate(MLBID = as.character(MLBID))) %>% # load them into R
+  rbind_all() %>%          # stack them on top of each other
+  tbl_df()
+p_dat
+```
+
+Japanese pitching statistics collected from Baseball-Reference do not have 1B, 2B, or 3B so these are recorded as missing.
+
+## 2) Park Effects
+
+Citizen's Bank Park is small, so it is easier for batter to hit home runs.  Park factors have been developed to account for these differences in parks.  They attempt to answer the question, "If a player hit 20 home runs in park X, how many would he hit in the same number of plate appearances in an average park?"
+
+There are several versions of park factors available.  We will use the ones from [StatCorner](http://www.statcorner.com/ParkReport.php) because they provide park factors for minor league stadiums at all levels.  StatCorner provides park factors for both left-handed and right-handed batters.  Park factors for switch hitters are an average of the the two, with right being weighted three times as much as left
+
+$$pf_{both} = \frac{3 * pf_{right} + 1 * pf_{left}}{4}$$
+
+StatCorner's park factors are located in the "Park_Factors.csv" file in the "data/manual-info" folder.
+
+```{r get-pfs}
+pfs <- read.csv("N:/Apps/simScoresApp/data/manual-info/Park_Factors.csv") %>% 
+  tbl_df()
+pfs
+```
+
+The first row says that if an average left-handed batter had 89 strikeouts at Arizona's AAA stadium, we would expect him to have 100 strikeouts at an average AAA stadium.  Likewise, the fourth row says that if an average left-handed batter had 107 strikeouts at the Angels stadium, we would expect him to have 100 strikeouts at an average MLB stadium.
+
+However, a typical baseball player has half his games at home and half on the road.  So we regress the park factor toward 100.  The formula to adjust statistics is therefore:
+
+$$stat_{park-adjusted} = stat_{actual} * \frac{1}{\frac{pf}{200} + .5}$$
+
+In R, we first have to turn the statistics into "long" format.
+
+```{r stats-long}
+library(tidyr)
+b_long <- b_dat %>% gather(Statistic, Count, -c(MLBID:AB))
+b_long
+p_long <- p_dat %>% gather(Statistic, Count, -c(MLBID:TBF))
+p_long
+```
+
+For batters, we have to record whether they bat Left, Right, or Both.  This information is recorded in the "bio_bat.csv" file in the "data/manual-info" folder.
+
+```{r bat-bio}
+bat_bio <- read.csv("N:/Apps/simScoresApp/data/manual-info/bio_bat.csv") %>% 
+  tbl_df() %>% 
+  mutate(MLBID = as.character(MLBID)) %>% 
+  select(MLBID, Bats)
+b_long <- left_join(b_long, bat_bio)
+b_long
+```
+
+We then join these statistics with the park factors.
+
+```{r bat-pfs}
+b_pfs <- left_join(b_long, pfs)
+b_pfs
+```
+
+We do not have park factors for Japanese or Cuban stadiums so we set these park factors to 100. 
+
+```{r bat-jap-pfs}
+b_pfs <- b_pfs %>% mutate(wPF = ifelse(is.na(wPF), 100, wPF))
+b_pfs
+```
+
+
+For pitchers, we just use the "Both" park factor, then remove the Bats column since it is no longer needed.
+
+```{r pit-pfs}
+p_pfs <- left_join(p_long, pfs %>% filter(Bats == "Both")) %>% 
+  mutate(wPF = ifelse(is.na(wPF), 100, wPF))
+p_pfs %>% sample_n(10) # showing 10 random rows
+```
+
+We then calculate park adjusted statistics.
+
+```{r pfs}
+b_pfs <- b_pfs %>% mutate(park_adj = Count / (wPF / 200 + .5))
+p_pfs <- p_pfs %>% mutate(park_adj = Count / (wPF / 200 + .5))
+p_pfs %>% sample_n(10) # showing 10 random rows
+```
+
+Finally, we remove the Count and wPF columns since they are no longer needed then go back to the "wide" format.
+
+```{r pf-wide}
+b_wide <- b_pfs %>% 
+  select(-Bats, -Count, -wPF) %>%  # removing extra columns
+  spread(Statistic, park_adj)      # going to wide format
+p_wide <- p_pfs %>% 
+  select(-Bats, -Count, -wPF) %>% 
+  spread(Statistic, park_adj)
+p_wide %>% arrange(MLBID, Year)
+```
+
+This process is implemented by the `adjust_park_effects` function.
+
+```{r pf-function}
+b_park_adj <- adjust_park_factors(b_dat, pfs, "bat", bat_bio)
+p_park_adj <- adjust_park_factors(p_dat, pfs, "pit")
+p_park_adj %>% arrange(MLBID, Year)
+```
+
+## 3) Year Effects
+
+Because of the changes in run scoring environment since 2005, it makes sense to adjust our statistics once again to acknowledge that 20 home runs in 2005 is very different from 20 home runs in 2014.  We calculated "year factors" for each statistic in each year at the major league level.  These year factors are set so that 2014 is the reference point.  To be consistent with park factors, the year factor for each statistic in 2014 is 100.  
+
+For example, strikeouts in 2005 have a year factor of 88.  So if player X accumulated 88 strikeouts in 600 PA in 2005, we assume that he would have 100 strikeouts in 600 PA in 2014.  To adjust the statistics, the formula is
+
+$$stat_{year-adjusted} = stat_{actual} * \frac{100}{yf}$$
+
+We then assumed that these year factors were the same at each level in America.  They are located in the "Year-Factors.csv" file in the "data/manual-info" folder.  Year factors are not currently available in Japan.  If they are obtained, they can just be added to the "Year-Factors.csv" spreadsheet as long as they follow the same format.
+
+```{r year-factors}
+yfs <- read.csv("N:/Apps/simScoresApp/data/manual-info/Year-Factors.csv") %>% tbl_df()
+yfs
+```
+
+Once again, we have to turn the data into long format, then join them with the year factors.
+
+```{r p-yfs}
+p_yr_adj <- p_park_adj %>% 
+  gather(Statistic, Count, -c(Level:TBF)) %>% 
+  left_join(yfs)
+p_yr_adj
+```
+
+If we do not have the year factors (which we don't for Japanese data), we set them to be 100.
+
+```{r missing-yfs}
+p_yr_adj <- p_yr_adj %>% mutate(YF = ifelse(is.na(YF), 100, YF))
+```
+
+Finally, we adjust the statistics and return the data to a wide format.
+
+```{r p-adjusting}
+p_yr_adj %>% 
+  mutate(count_adj = Count * 100 / YF) %>% 
+  select(-Count, -YF) %>% 
+  spread(Statistic, count_adj) %>% 
+  arrange(MLBID, Year)
+```
+
+This process is implemented by the `adjust_year_effects` function.
+
+```{r year-adjusted}
+b_year_adj <- adjust_year_effects(b_park_adj, yfs, "bat")
+p_year_adj <- adjust_year_effects(p_park_adj, yfs, "pit")
+p_year_adj %>% arrange(MLBID, Year)
+```
+
+## 4) Adjusting for Level
+
+Major League Equivalencies (MLEs) adjust statistics for differences in level.  They tell us the number of home runs player X would have in the majors if he had 20 at AAA.  MLEs for statistics in America were provided by [Brian Cartwright](http://www.baseballprospectus.com/article.php?articleid=8887).  They were calculated for Japanese statistics in the summer of 2014.  They are located in the "Level_Multipliers.csv" file in the "data/manual-info" folder.
+
+```{r mles}
+mles <- read.csv("N:/Apps/simScoresApp/data/manual-info/Level_Multipliers.csv") %>% tbl_df()
+head(mles, 10)
+```
+
+The multiplier for walks at AA is 0.623.  The interpretation differs for batters and pitchers.  For batters, we expect his walks in the majors would have been 60% of his walks at AA (assuming he had played in the majors instead of AA).  For pitchers, however, we expect his walks to increase going from AA to the majors.  So the formula for batters is
+
+$$stat_{level-adjusted} = stat_{actual} * \text{Multiplier}$$
+
+For pitchers it is
+
+$$stat_{level-adjusted} = stat_{actual} * \frac{1}{\text{Multiplier}}$$
+
+We have MLEs for double, triples, and SDTs ($\text{singles} + \text{doubles} + \text{triples}$).  Some data do not provide SDT explicitly so we must calculate it if it is missing and discard the singles column.  Then, we once again turn the data into "long" format the join it with the MLEs.  This time, if an MLE is missing, we replace it with 1.    For batters, we multiply by the MLE and for pitchers we divide.  Then we return the data to a wide format.
+
+```{r p-mles}
+p_year_adj %>% 
+  mutate(SDT = ifelse(is.na(SDT), X1B + X2B + X3B, SDT)) %>% 
+  select(-X1B) %>% 
+  gather(Statistic, Count, -c(Level:TBF)) %>% 
+  left_join(mles) %>% 
+  mutate(Multiplier = ifelse(is.na(Multiplier), 1, Multiplier), 
+         level_adj = Count / Multiplier) %>% 
+  select(-Count, -Multiplier) %>% 
+  spread(Statistic, level_adj) %>% 
+  arrange(MLBID, Year)
+```
+
+This is implemented in the `calc_MLEs` function (though the columns are in a slightly different order).  The results of this function are stored in the `data/4-mles` folder.  
+
+```{r level-adjusted}
+b_level_adj <- calc_MLEs(b_year_adj, mles, "bat")
+p_level_adj <- calc_MLEs(p_year_adj, mles, "pit")
+p_level_adj %>% arrange(MLBID, Year)
+```
+
+After these statistics are joined with the bio and position information, they are ready to be used for calculating similarity scores.  Interested readers can refer to the "Calculating Similarity Scores" vignette for how similarity scores are calculated.
+
+## 5) Record Missing Data
+
+This step is implemented so the user may know which players have missing data.  In the future, the Phillies database will be complete and missing data will not need to be recorded.  So I am not going to explain how I implement the process of identifying and saving missing data.
+
+If the reader is interested, see the `identify_missing` and `identify_missing_positions` functions.  The missing information is stored in the "data-5-missing" folder.
+
+## 6) Processing for Apps
+
+To be used by the Shiny apps, the data must be processed a bit more.  Since this tool will eventually be moved out of the Shiny apps and into PHIL, I will not explain this final step as it is customized for the Shiny apps.  Interested readers can consult the `final_clean`, `get_comp_app_data`, `get_curve_app_data`, and `update_apps` functions.
+
+## Summary
+
+Once again, the steps used to update and process the data are
+
+1) download and clean American and Japanese statistics
+2) adjust for park effects with park factors
+3) adjust for year effects with year factors
+4) adjust for level effects with MLEs
+5) record missing data
+6) additional processing for Shiny apps
+
+I have described steps 2, 3, and 4 in detail because they will need to be completed regardless of the data source or the user interface.  The other steps will have to be customized to fit whatever data and user interface are implemented.
+
+## References
+
+- Cartwright, Brian.  "Brian Cartwright's Initial Entry."  *Baseball Prospectus*.  [http://www.baseballprospectus.com/article.php?articleid=8887](http://www.baseballprospectus.com/article.php?articleid=8887)  May 17, 2009.
+
+- StatCorner.  [http://www.statcorner.com/ParkReport.php](http://www.statcorner.com/ParkReport.php)  2014
+

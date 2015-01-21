@@ -1,0 +1,77 @@
+---
+title: "Getting Started on a New Computer"
+author: "Kevin Ferris"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started on a New Computer}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\usepackage[utf8]{inputenc}
+---
+
+This vignette will discuss how to set up the apps on a new computer.  This will enable the user to push changes in data or code to the apps that are hosted on [shinyapps.io](shinyapps.io).  The user will need to 
+
+- install R, RStudio, and one of
+    - (for Windows users only) RTools for building packages
+    - (for Mac users only) XCode Command Line Tools for building packages
+    - (for Linux users only) GCC
+- install several R packages
+- configure the `shinyapps` account on the computer
+- install the `simScores` package
+- update the batch file
+
+## Installing R, RStudio, and RTools
+
+The user will need to download the latest versions of R, RStudio, and RTools.  It is **very important** that the user installs these as an administrator as some changes have to be made to environment variables.
+
+The easiest way to download R is to google `download r for windows` (or MAC or Linux depending on the user's OS).  Then follow the links to the most recent version of R.  During installation, you should be able to accept all the default options during installation.
+
+Next, [download RStudio](http://www.rstudio.com/products/rstudio/download/) for your operating system.  During the installation process, a screen should appear asking which version of R to use.  Under the `Browse` area, there should be a couple versions of R which RStudio has located.  Select one of them.  If there are not already choices under `Browse`, then R may not have installed correctly.  Close out of the installation for RStudio and try to install R again before preceding.  Make sure you have administrator privileges when installing.  After this point, you should be able to accept all the default options.
+
+The instructions to install RTools are located [here](https://github.com/stan-dev/rstan/wiki/Install-Rtools-for-Windows).  This link notes that during the installation process, you must make sure to check the box that says `Edit the System PATH`.  After checking this box and clicking next, the next screen to appear should be a list of paths.  The first two should be `c:\Rtools\bin` and `c:\Rtools\gcc-4.6-3\bin`.  If not, insert two new lines at the top and paste these paths (one on each line).  The rest of the installation process can proceed normally.  
+
+I have never used Mac or Linux so I cannot provide detailed instructions for these operations systems.  Some instructions for Mac are located [here](https://github.com/stan-dev/rstan/wiki/RStan-Mac-OS-X-Prerequisite-Installation-Instructions).
+
+## Installing R Packages
+
+First we will install the `devtools` package.  Open RStudio.  In the command line, type `install.packages("devtools", dep = TRUE)`  A prompt may appear asking the user to select a CRAN mirror.  Select one that is geographically close to you.
+
+Once this is finish downloading, type `library(devtools)` in the command line and hit enter.  If an error message appears saying that RTools cannot be found (for Windows users), then there was a problem when installing RTools and RStudio is not able to find where RTools was located.  You will have to re-install RTools.  Again, make sure you have administrator privileges when installing.  [Here](http://stackoverflow.com/questions/16616527/how-do-i-get-rtools-3-0-working-for-r-3-0-r-cant-find-the-installation) are two [links](http://stevemosher.wordpress.com/step-two-get-to-know-your-windows-system/) which may be helpful.
+
+Once devtools has been successfully installed, we can install the other packages that are needed for the apps.  Type `install.packages(c("arm", "dplyr", "stringr", "lubridate", "tidyr", "XML", "shiny", "assertthat", "lme4", "ggplot2"), dep = TRUE) into the command line and hit enter.
+
+## Configuring ShinyApps
+
+The instructions to set up ShinyApps on a new computer can be found [here](http://shiny.rstudio.com/articles/shinyapps.html).  We have already installed R, RStudio, RTools, and devtools so you may start at the *How to install shinyapps* section.  To access the Phillies ShinyApps account, contact Scott Freedman.
+
+## Installing the simScores package
+
+The `simScores` package has been written by the Phillies Baseball Operations department for the purpose of calculating similarity scores.  It is located in the `N:\Apps` folder.  
+
+We could install it from this location, but ShinyApps requires that packages be installed from CRAN or from GitHub.  So if we wish to be able to update the apps that are hosted on ShinyApps, we must 
+
+- create a GitHub repository
+- push the `simScores` package to the GitHub repository
+- then install the package from GitHub
+
+If you have never used GitHub before, Karl Broman has an [excellent tutorial](http://kbroman.org/github_tutorial/).  
+
+Let's say we upload the package to GitHub user `kferris10` in a repository called `simScores`.  To install the package, type `devtools::install_github("kferris10/simScores")` into the command line in RStudio and hit enter.
+
+## Configuring the batch file
+
+To update the apps, there are batch files located in the "N:/Apps/simScoresApp" folder.  They are set up to run using a certain version of R.  So the final step is to tell the batch files the version of R that we have installed.
+
+To do this, open a text editor (I usually use Notepad which should be installed on any Windows system) then open the batch file from the text editor.  The first line should read `PATH c:\Program Files\R\R-3.1.0\bin;%path%`.  Change the `R-3.1.0` part to `R-your.verision.of.R` and save the file.  You are now ready to go!  Double click the batch file and the updating process will run.  The batch files are currently named "update-apps-R_3_1_0" and "update-apps-R_3_1_2" to reflect the versions of R that the run.
+
+
+
+
+
+
+
+
+
+
+
+

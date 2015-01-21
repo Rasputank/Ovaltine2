@@ -1,0 +1,427 @@
+---
+title: "Aging Curves"
+author: "Kevin Ferris"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Aging Curves}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\usepackage[utf8]{inputenc}
+---
+
+```{r startup, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(comment = "#>", 
+                      collapse = TRUE, 
+                      tidy = F, 
+                      fig.height = 4, 
+                      fig.width = 6, 
+                      fig.align = "center")
+options(digits = 3)
+```
+
+A useful extension of the similarity scores is the ability to model the aging trend of the focus player.  This vignette will discuss the methodology used to model this trend and how to visualize the trend as well.  As an example, we will simulate wOBA for Domonic Brown based on the 10 players with the most similar statistics to Brown from ages 24 to 26.  See the "Similarity Scores" vignette for how the 10 comparable players are obtained.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(simScores)
+setwd("H:/simScoresApp") # or wherever the apps folder is located
+load("b-comparison-app/bat_simscore_data.RData")
+weights <- c(position = .05, pa = .9, bb.perc = .66, k.perc = .84, iso = .84, babip = .23, obp = .92)
+comps <- age_comps("Brown; Domonic L.", age_grp, weights, 3, "bat")
+comps
+```
+
+## Brief Overview
+
+- We calculate the statistic of interest (for this example it's wOBA) for the focus player and each of his top comparables for each season of their career
+- We fit a regression model which uses age to explain performance
+- We extract the estimated curve from this model
+- We then simulate curves from this model.  These represent the range of estimated curves
+- We plot the estimated curve and the simulated curves to visualize the estimated aging trend for this group of players
+
+## Data
+
+The first step of the process is to slice the data to identify the focus player and the top 10 comps, then join their scores with their statistics.
+
+```{r joining, message=FALSE}
+stats <- comps$table %>% 
+  slice(1:(10 + 1)) %>%  # +1 to include the focus player
+  inner_join(age_grp) 
+stats %>% 
+  dplyr::select(mlbid, name, age, g, pa, hr, score) %>% 
+  head()
+```
+
+Next, we calculate the statistic we wish to model.  For this example, the stat is wOBA.  The formula for wOBA was obtained from the [FanGraphs Glossary](http://www.fangraphs.com/library/offense/woba/).
+
+```{r woba}
+stats <- stats %>% mutate(
+  woba = (.69*bb + .722*hbp + .888*x1b + 1.271*x2b + 1.616*x3b + 2.101*hr) / pa
+  )
+stats %>% 
+  dplyr::select(mlbid, name, age, score, woba) %>% 
+  head()
+```
+
+## The Model
+
+Many researchers have suggested that baseball player's talent follows an inverted U-curve.  At first, they are relatively poor players.  Their talent increases as they age and gain experience with players typically peaking in their late 20's.  Finally there is a descent as the players age and their skills erode.  This trend is visualized below.
+
+```{r Ucurve, echo=FALSE}
+library(ggplot2)
+dat <- data.frame(x = seq(20, 33, by = .01)) %>% 
+  mutate(y = -1.84 + .164*x - .0031*x^2)
+qplot(x, y, data = dat, geom = "line") + 
+  scale_y_continuous(breaks = NULL, name = "Ability") + 
+  scale_x_continuous(breaks = c(20, 24, 28, 32), name = "Age") + 
+  labs(title = "Hypothesized Aging Curve") + 
+  theme_bw() + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+So a natural model to use for these curves is a quadratic regression model.  For these data, each observation constitutes the statistics of a player for one year.  So in the `stats` data.frame we have $n = $ `r nrow(stats)` observations.  We will let $i = 1 \ldots n$ denote each observation, $y_i$ denote the ability of the $i^{th}$ observation, and $age_i$ denote the ability of the $i^{th}$ observation then the model looks like:
+
+$$y_i = \beta_0 + \beta_1 * age_i + \beta_2 * age_i^2 + \epsilon_i$$
+$$\epsilon_i \sim N(0, \sigma^2)$$
+
+This implies that ability follows a quadratic curve and that errors are normally distributed with constant variance.
+
+### Weighting by Comparability
+
+Players who are more similar to the focus player should matter more when estimating a player's aging curve.  So we weight the observations for each player by that player's similarity score.  Let $w_i$ be the weight for the $i^{th}$ observation where $w_i = (score_i / 1000) ^ {power}$.  
+
+For this example, the power is chosen to be 30.  Increasing the power will make players with higher similarity scores be more influential than players with lower similarity scores when modelling the aging curve.  
+
+The written model remains unchanged.  However, instead of using least squares to minimize the sum of squared errors ($\sum\limits_{i=1}^n \epsilon_i^2$), weighted least squares will be used to minimize the sum of the weighted errors ($\sum\limits_{i=1}^n w_i * \epsilon_i^2$)
+
+### Varying by Player
+
+Jim Albert wrote a paper in 2002 which extends the quadratic regression model (Albert, 2002).  Albert noted that some players such as Roger Maris and Mickey Mantle peak for a short time before their ability decreased.  These players had relatively steeper aging curves which implied a rapid rise, short peak, and quick decline.  Others, such as Willie Mays and Hank Aaron, had flatter curves because their performance was more consistent across their careers. To allow different players to have different aging curves, Albert suggested extending the quadratic model to allow the coefficients in the model to vary by player.  
+
+Extending the notation from before, let $J$ denote the total number of players we are using, $j = 1 \ldots J$ denote individual players, and $j[i]$ denote the player associated with the $i^{th}$ observation in the data.  Albert's model is then:
+
+$$y_i = (\beta_0 + b_{0,j[i]}) + (\beta_1 + b_{1,j[i]}) * age_i + (\beta_2 + b_{2,j[i]}) * age_i^2 + \epsilon_i$$
+$$\left( \begin{array}{ccc}
+b_{0,j} \\
+b_{1,j} \\
+b_{2,j} \end{array} \right) 
+\sim 
+MvN(\left( \begin{array}{ccc}
+          0 \\
+          0 \\
+          0 \end{array} \right), 
+  \textbf{V})$$
+$$\epsilon_i \sim N(0, \sigma^2)$$
+
+In this model, there is an average intercept $\beta_0$, but now player $j$ deviates from that intercept by $b_{0,j}$.  Likewise, there is an average slope for $age$ and $age^2$, and the slope for each individual player deviates from these averages.  $b_{1,j}$ is the deviation from the linear term for player $j$ and $b_{2,j}$ is the deviation from the quadratic term.  These deviations are assumed to follow a multivariate normal distribution with a mean vector of zeroes and a proper 3x3 variance-covariance matrix (i.e. the matrix is positive semi-definite).  Once again, the residuals are assumed to follow independent normal distributions with each having a mean of zero and the same variance.
+
+These models where the slopes vary by player are sometimes referred to as mixed effects models, multilevel models, or hierarchical models.  Chapters 11-13 of (Gelman and Hill, 2006) discuss these models.  (Zuur et al., 2009) also cover them.
+
+### Simpler Model
+
+The model where all three coefficients vary by player is conceptual correct because it allows each player's aging curve to deviate slightly from the average.  However, in practice there can still be numerical issues or other problems with the aging curves.  In these cases, a simpler model must be used.
+
+Instead of allowing all three coefficients to vary by player, some researchers have just allowed the intercept to vary (Bradbury 2009).  This allows the model to account for the difference in skill between players, but it assumes that all players follow the same aging trend.  Obviously this is an erroneous assumption as Mantle has a different aging curve than Aaron.  But making this assumption greatly reduces the complexity of the model.  In situations where there are serious numerical issues, this simplification may be the only way to find an acceptable solution.
+
+The notation for the simplified model is
+
+$$y_i = (\beta_0 + b_{j[i]}) + \beta_1 * age_i + \beta_2 * age_i^2 + \epsilon_i$$
+$$b_j \sim N(0, \sigma_b^2)$$
+$$\epsilon_i \sim N(0, \sigma^2)$$
+
+This model assumes that the ability for player $j$ deviates from the true intercept, $\beta_0$, by $b_j$.  It assumes that the $b_j$'s are normally distributed with mean zero and common variance.
+
+## Fitting the Model
+
+### Orthogonal Polynomials
+
+This model is fairly complex so care must be taken to ensure that there are no numerical issues when fitting the model.  One step that will help is to decompose the `age` vector into orthogonal polynomials.  In R, orthogonal polynomials can be found using the `poly()` function (Kennedy and Gentle, 1980).
+
+```{r orthogonal}
+orthog_age <- poly(stats$age, degree = 2) 
+model_ages <- orthog_age %>% 
+  data.frame() %>% 
+  setNames(c("a1", "a2"))
+model_data <- cbind(
+  stats %>% dplyr::select(mlbid, name, age, score, woba), 
+  model_ages
+  )
+head(model_data)
+```
+
+By decomposing `age`, we have created two new variable `a1` and `a2`.  `a1` will function as the linear term and `a2` will function as the squared term in the model.  These terms are linearly independent and centered at zero so they will be less likely to cause numerical issues.
+
+### The `lmer` Function
+
+Multilevel models can be fit in R using the `lmer` function from the `lme4` package. The `(1+a1+a2|mlbid)` notation indicates that the intercept, linear, and quadratic terms will vary by `mlbid`.
+
+```{r model, message=FALSE}
+library(lme4)
+model <- lmer(woba ~ a1 + a2 + (1+a1+a2|mlbid), data = model_data, 
+              weights = (score / 1000) ^ 30)
+```
+
+Note that a warning is thrown.  This indicates that there are still serious numerical issues with the model.  Before continuing, the model should be refit with different parameters.  We will change the power used in the weights here, but other options could be to change the number of comps, use different variables when generating comparable players, or use the simpler model.
+
+```{r model2}
+model2 <- lmer(woba ~ a1 + a2 + (1+a1+a2|mlbid), data = model_data, 
+              weights = (score / 1000) ^ 500)
+```
+
+### Simpler `lmer` Model
+
+If we wanted to fit the simpler model instead of changing the weights, the following code would be used.  The `(1|mlbid)` notation indicates that only the intercept varies by player.  
+
+```{r model-simple, message=FALSE}
+library(lme4)
+model_simple <- lmer(woba ~ a1 + a2 + (1|mlbid), data = model_data, 
+              weights = (score / 1000) ^ 30)
+```
+
+## Extracting Information before Plotting
+
+There are three things that we need to obtain before plotting:
+
+1) The focus player's performance to date
+2) The average curve from the model: $\beta_0 + \beta_1 * age_i + \beta_2 * age_i^2$
+3) Simulated curves from the model
+
+### Focus Player's Performance
+
+We need to filter the data to select only Domonic Brown's information.
+
+```{r fp-stats}
+fp_stats <- model_data %>% filter(name == "Brown; Domonic L.")
+fp_stats
+```
+
+### Average Curve
+
+$\hat{\beta}_0 + \hat{\beta}_1 * age_i + \hat{\beta}_2 * age_i^2$ represents the estimated true aging curve for our data.  To plot the aging curves, this estimate must be extracted from the fitted model.  
+
+We'll plot the aging curve from age 21 to 30 so we need to first set up a vector from 21 to 30.
+
+```{r age-vec}
+pred_ages <- seq(21, 30, by = .1)
+head(pred_ages)
+```
+
+The next step is to turn this vector into orthogonal polynomials.  This is implemented using the `predict` function which creates using orthogonal polynomials for the `pred_ages` sequence using the model that was previously used to create orthogonal polynomials.  It is very important to make sure that the same model is used.
+
+```{r orthog-ages}
+orthog_pred_ages <- predict(orthog_age, pred_ages)
+head(orthog_pred_ages)
+```
+
+This is then turned into the "design matrix" by adding a column of 1's. 
+
+```{r design-mat}
+design_matrix <- cbind(1, orthog_pred_ages)
+head(design_matrix)
+```
+
+This can then be matrix multiplied by the fixed effects from the fitted model to obtain the estimated average aging curve for Brown and his top 10 comps.
+
+```{r avg-curve}
+head(design_matrix %*% as.matrix(fixef(model2)))
+```
+
+The `pred_curve` function implements this process.  It takes the `pred_ages` sequence, the coefficients from the model, and the `orthog_age` object as inputs and returns the estimated aging curve.
+
+```{r using-pred_curve}
+avg_curve <- pred_curve(pred_ages, fixef(model2), orthog_age) %>% 
+  setNames(c("pred", "age"))
+head(avg_curve)
+```
+
+### Simulated Aging Curves
+
+(Gelman and Hill, 2006) discuss how simulating fitted models can be used to help understand the model.  To get a better sense of the uncertainty in the estimated aging curve, we will simulate the fixed effects from the fitted model 500 times.  This will create 500 sets of $\beta_0$, $\beta_1$, and $\beta_2$ that are reasonable according to the model.  This is implemented using the `sim` function from the `arm` package.  Each row of the resulting matrix is one set of simulated coefficients
+
+```{r sims, message=FALSE}
+library(arm)
+sims <- sim(model2, 500)
+head(sims@fixef) # this is an S4 class object so @ is used to extract stuff
+```
+
+Using the `pred_curve` function, we can estimate the aging curve for each of these simulations.
+
+```{r sims-pred}
+sim_curves <- pred_curve(pred_ages, t(sims@fixef), orthog_age) %>% 
+  tidyr::gather(sim, pred, -age) # going to "long" format
+head(sim_curves)
+tail(sim_curves)
+```
+
+### Using the `sim_age_curves` function
+
+To reiterate, we have obtained three pieces of information that will be used to plot the aging curves: 
+
+1) The focus player's performance to date (we called this `fp_stats`)
+2) The average curve from the model (we called this `avg_curve`)
+3) Simulated curves from the model (we called this `sim_curves`)
+
+To simplify this process, these can be obtained from the `sim_age_curve` function with slightly different names.
+
+```{r sim_agecurve, message=FALSE}
+aging_curve <- sim_age_curve(fp = "Brown; Domonic L.", comps = comps, dat = age_grp, 
+                             ages_pred = c(21, 30), wt_power = 500, stat = "woba")
+names(aging_curve)
+```
+
+The three pieces of information are named
+
+1) `fp`
+2) `avg`
+3) `sims`
+
+A fourth piece of information, `warnings` has been added.  This is TRUE if the `lmer` function threw any warnings when fitting the model.  As has been noted previously, if there are any warnings different parameters should be tried before proceeding.
+
+```{r model-warnings}
+aging_curve$warnings
+```
+
+## Plotting Aging Curves
+
+These plots are drawn using the `ggplot2` package in R.  The lines are sequentially drawn.  First, the simulated curves are lightly drawn.
+
+```{r sims-lines, warning=FALSE}
+library(ggplot2)
+p1 <- ggplot(aging_curve$sims, aes(x = age, y = pred)) + 
+  geom_line(aes(group = sim), alpha = I(.05))
+```
+
+Then the estimated true curve is drawn on top
+
+```{r avg-line}
+p1 <- p1 + geom_line(size = I(1.1), colour = "blue", data = aging_curve$avg)
+```
+
+Finally, the player's performance over the timeframe is drawn
+
+```{r fp-line}
+p1 <- p1 + geom_line(data = aging_curve$fp, aes(y = woba), size = I(1.1), colour = "red")
+p1
+```
+
+This plot looks problematic.  There are many U-shape curves which suggest that Brown's ability will increase as he ages which doesn't make much sense.  So we should try to refit the model and get curves which logically make sense.  The `plot_age_curve` function does all of the plotting to make this process easier.  This time, we will increase the number of comparables to 30 and decrease the power to 10.
+
+```{r age-curve2, message=FALSE}
+x3 <- sim_age_curve("Brown; Domonic L.", comps, age_grp, c(21,30),
+                    type = "bat", stat = "woba", wt_power = 10, ncomps = 30)
+x3$warnings # no warnings - good
+p3 <- plot_age_curve(x3, 500, "Brown; Domonic L.", "woba")
+p3 
+```
+
+This curve has the expected U-shape, it did not throw any warnings, and the simulations appear to be fairly consistent with each other.  So this is probably an acceptable curve to use to model Brown's performance.
+
+## Additional Examples
+
+### Simple Curve
+
+Here is what the simulated aging curve would look like if we had used the simpler model that only allows the intercept to vary between players.
+
+```{r simple-curve}
+simple_curve <- sim_age_curve("Brown; Domonic L.", comps, age_grp, c(21,30),
+                    type = "bat", stat = "woba", wt_power = 10, ncomps = 30, 
+                    simplify = T)
+simple_curve$warnings # no warnings
+plot_age_curve(simple_curve, 500, "Brown; Domonic L.", "woba")
+```
+
+This is similar to the more complex curve, but it suggests that Brown will peak slightly later.  The simpler curves will generally provide similar estimates to the more complex curves.
+
+### Reducing Age Range
+
+Because Domonic Brown is currently 26, it may not make sense to use data from his age 19 or 20 seasons when modelling his aging curve.  He is a differently player now, so those years may be confusing the model.  We can restrict the model to only use statistics from ages 21 through 33 when fitting the curve.
+
+```{r age-range-curve}
+b_curve <- sim_age_curve("Brown; Domonic L.", comps, age_grp, c(21,30),
+                    type = "bat", stat = "woba", wt_power = 10, ncomps = 30, 
+                    model_ages = c(21, 33))
+b_curve$warnings # no warnings
+plot_age_curve(b_curve, 500, "Brown; Domonic L.", "woba")
+```
+
+### Aging Curve for Power
+
+We can also model a different statistics by changing the `stat` argument.
+
+```{r iso-curve}
+iso_curve <- sim_age_curve("Brown; Domonic L.", comps, age_grp, c(21,30),
+                    type = "bat", stat = "iso", wt_power = 10, ncomps = 30, 
+                    model_ages = c(21, 33))
+iso_curve$warnings # no warnings
+plot_age_curve(iso_curve, 500, "Brown; Domonic L.", "iso")
+```
+
+### Cody Asche
+
+```{r asche}
+a_comps <- age_comps("Asche; Cody J.", age_grp, weights)
+a_curve <- sim_age_curve("Asche; Cody J.", a_comps, age_grp, c(21, 30), 
+                         type = "bat", stat = "woba", wt_power = 15, ncomps = 15)
+a_curve$warnings
+plot_age_curve(a_curve, 500, "Asche; Cody J.", "woba")
+```
+
+Let's try the simpler curve for fun
+
+```{r asche-simple}
+a_simple <- sim_age_curve("Asche; Cody J.", a_comps, age_grp, c(21, 30), 
+                         type = "bat", stat = "woba", wt_power = 15, ncomps = 15, 
+                         simplify = TRUE)
+a_simple$warnings
+plot_age_curve(a_simple, 500, "Asche; Cody J.", "woba")
+```
+
+Simpler curve doesn't make as much sense here.  It should probably stop increasing around 28.
+
+### Ryan Howard 
+
+Here will simulate Ryan Howard's aging curve based on his performance from ages 25 to 28.
+
+```{r howard}
+h_comps <- age_comps("Howard; Ryan J.", age_grp, weights, c(25, 28))
+h_curve <- sim_age_curve("Howard; Ryan J.", h_comps, age_grp, c(25, 34), 
+                         type = "bat", stat = "woba", wt_power = 15, ncomps = 15)
+h_curve$warnings
+plot_age_curve(h_curve, 500, "Howard; Ryan J.", "woba")
+```
+
+### Pitchers
+
+For pitchers we can model FIP, BB/9, K/9 or HR/9
+
+```{r fip}
+setwd("N:/Apps/simScoresApp") # or wherever the apps folder is located
+load("p-comparison-app/pit_simscore_data.RData")
+p_weights <- c(throws = .01, ip = .62, k.9 = .83, bb.9 = .83, hr.9 = .91, babip = .55, fip = .35)
+buch_comps <- age_comps("Buchanan; David A.", age_grp, p_weights, type = "pit")
+buch_curve <- sim_age_curve("Buchanan; David A.", buch_comps, age_grp, c(21, 30), 
+                         type = "pit", stat = "fip", wt_power = 15, ncomps = 15)
+buch_curve$warnings # uh-oh - we'll try a simpler model
+buch_curve <- sim_age_curve("Buchanan; David A.", buch_comps, age_grp, c(21, 30), 
+                         type = "pit", stat = "fip", wt_power = 15, ncomps = 15, 
+                         simplify = TRUE)
+buch_curve$warnings # good
+plot_age_curve(buch_curve, 500, "Buchanan; David A.", "fip") # not a very good fit
+buch_comps2 <- age_comps("Buchanan; David A.", age_grp, p_weights, years = 1,  type = "pit")
+buch_curve2 <- sim_age_curve("Buchanan; David A.", buch_comps2, age_grp, c(21, 30), 
+                         type = "pit", stat = "fip", wt_power = 15, ncomps = 15, 
+                         simplify = TRUE)
+buch_curve2$warnings # good
+plot_age_curve(buch_curve2, 500, "Buchanan; David A.", "fip") # better fit for his more recent performance, but still not great
+```
+
+
+## References
+
+- Albert, Jim. "Smoothing career trajectories of baseball hitters." Manuscript, Bowling Green State University (2002).
+- Bradbury, John Charles. "Peak athletic performance and ageing: evidence from baseball." Journal of sports sciences 27.6 (2009): 599-610.
+- Gelman, Andrew, and Jennifer Hill. Data analysis using regression and multilevel/hierarchical models. Cambridge University Press, 2006.
+- Kennedy, W. J. Jr and Gentle, J. E. (1980) Statistical Computing Marcel Dekker.
+- wOBA.  FanGraphs Glossary.  FanGraphs. [http://www.fangraphs.com/library/offense/woba/](http://www.fangraphs.com/library/offense/woba/).  Accessed 11/24/2014.
+- Zuur, Alain, et al. Mixed effects models and extensions in ecology with R. Springer, 2009.
+

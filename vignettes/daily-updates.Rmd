@@ -1,0 +1,111 @@
+---
+title: "Updating the Apps"
+author: "Kevin Ferris"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\usepackage[utf8]{inputenc}
+---
+
+## Daily Updates
+
+Updating the apps each day is very simple.  
+
+- Refresh the PIA queries
+- Download the refreshed data
+- Put these downloads into the "data/0-downloads" folder (you'll have to replace the existing .csv files)
+- Double click the "update-apps" batch file
+
+That's all there is to it.  The only trick is that you have to make sure the names of the data sets do not change.  They must be named "bat_minors2.csv", "bat_majors2.csv", "pit_minors2.csv", and "pit_majors2.csv" (in this document, anything in quotation marks is the name of either a folder or a file).
+
+## Manualling Inputting Data
+
+Some data for the apps must be entered by hand.  All of these data reside in the "data/manual-info" folder.  
+
+IMPORTANT: Because these are all .csv files, there can be no commas in any of the files.  When inputting player names, for example, the format should be **Last; First M** instead of **Last, First M.**
+
+### Inputting Positions
+
+The most common information that has to be updated is the position at which each player spends most of his playing time.  Position must be entered manually (i.e. it is not updated by the PIA queries).  So if we wish to say that Jimmy Rollins played in the middle in 2015, we open the "positions.csv" file, scroll to the bottom and enter Rollins's MLBID (it's 276519), the year (2015), and Middle in the proper columns.  Be careful not to make typos and to keep capitalization consistent throughout this file or there will be problems.
+
+### Inputting Biographical Data
+
+The "bio_bat.csv" and "bio_pit.csv" files are very important for the apps.  They control the players who are allowed into the batter and pitcher apps respectively.  If a player is not named in the proper bio file, that player will not be available for comparison in the apps.
+
+For example, once the 2015 season starts Yasmany Tomas will not be available until we enter his biographical information into the "bio_bat.csv", file.  The easiest way to do this is to look up Tomas's MLBID (once he's assigned one), then enter it along with his other biographical information on a new row.
+
+### DL Time
+
+DL time is located in the "injuries.csv", file.  If a player and year are listed here, then that information is included in the apps.  If there is no record for a player/year combination, then it is assumed the player did not miss any time in that year.  For example, there is a row with Rollins's MLBID (again, it's 276519) in the year 2008 that says he spent 18 days on the DL, but there is no row with Rollins's MLBID in 2014.  So the apps say that he missed 18 days in 2008 and 0 days in 2014.  If we want to say he missed 30 days in 2015, then we just create a new row with his MLBID, the year 2015, and 30 days missed.
+
+## Players with Missing Data
+
+The most common time when there will not be information for a player, and therefore we will have to input his data, occurs when a new player is promoted to High A.  For example, Matt Imhof was drafted in 2014 and did not make it to Clearwater so I have not entered his biographical or positional data yet.  When he gets promoted to Clearwater in 2015, his information will be downloaded from PIA, but his biographical information has not been recorded yet so he is not allowed into the apps.  
+
+We keep track of all the players who have missing data in the "data/4-missing" folder.  There are four files: one for batters who have missing biographical data ("bat-miss-bio.csv"), one for pitchers who have missing biographical data ("pit-miss-bio.csv"), one for batters who have missing positions ("bat-miss-positions.csv"), and one for pitchers who have missing positions ("pit-miss-positions.csv").  Once a player's missing data is entered (Imhof's bio info and position in 2015 for example), that player will no longer appear is the missing files after updating the apps.
+
+These files should not be altered by hand.  They are simply there so that we know which players are missing data.
+
+## Players to Ignore
+
+There may be some players who have missing data that we do not really care about.  For example, Shinya Miyamoto played in the JPCL in 2011 at the age of 40.  We almost certainly don't care about him and it is not even worth taking the time to fill in his biographical data.  It would be annoying, then, if he always showed up in the list of players with missing data.  
+
+The "players_to_ignore.csv", file in the "data/manual-info" folder was created for this purpose.  If we don't want a player's name to be listed in the missing data files, just include that player's MLBID in the "players_to_ignore.csv" file.
+
+## Adding Additional Players
+
+Only statistics from America and Japan are currently used in the apps.  However, the apps are set up so that additional statistics (say from Cuba) could be included in the apps.  
+
+In the "data" folder, the first folder is called "data/0-downloads" which is where the American statistics downloaded from PIA and the Japanese statistics downloaded from Baseball-Reference are located.  Since we know the format of these statistics, these can be automatically cleaned; the results of this cleaning are placed in the "data/1-cleaned" folder under either batters or pitchers (whichever is appropriate).
+
+Since Cuban statistics are not currently available, we cannot know how they will be formatted.  So the cleaning process cannot presently be automated.  If however, Cuban statistics do become available the user could manually clean them and then put batting and pitching stats into the "data/1-cleaned"" folder under "batters" and "pitchers" respectively.  The updating process automatically reads in all files that are located under these folders and processes them for the apps.  The only qualifications are that the names of columns must match for all the data sets and the files must be saved as .csv files.
+
+An example of what Cuban stats would look like is provided in the "example-cuban-stats.csv" file in the "data/1-cleaned/batters" folder.  The MLBID for the example player is "example_id."  There is no record for a player with that MLBID so these stats are not included in the app and this player's information is recorded as missing.
+
+## Multipliers
+
+Because of park and league effects, not all statistics are created equal.  So the first thing to do when comparing player is to put all statistics on the same scale.  
+
+Park effects are adjusted for using the "Park_Factors.csv" file in the "data/manual-info" folder.  At Coors Field, the weighted park factor (wPF) for home runs by right-handed batters is 114.  This reads as "Coors Field increases home runs for right-handed batters (RHB) by 14%."  I calculated the multiplier for switch hitters (Both) as the weighted average of the park factor for RHB and LHB with RHB receiving a weight of 3 and LHB receiving a weight of 1.  Pitchers always use the Both park factor.  Currently, we do not have park factors for Japanese stadiums.  So they are assumed to all be 100.  To add park factors for these stadiums, add rows to the "Park_Factors.csv" file with the correct team name and league.
+
+To adjust for changes in run scoring environment across time, "Year Factors" were created.  These are located in the "Year-Factors.csv" file in the "data/manual-info" folder.  Like Park Factors they use 100 as the reference level.  Unlike Park Factors, 100 is not average for Year Factors because there is no "average" time period in baseball.  Instead, we set 2014 as the reference level and then use Year Factors to adjust statistics for changes in offensive performance relative to 2014.  The Year Factor for strikeouts in 2005 is 88 so we estimate that a player in 2005 with 88 strikeouts would have 100 strikeouts in 2014.  To add Year Factors for 2015 or for Japanese statistics, add rows to the "Year-Factors.csv" file.
+
+Level multipliers for MLEs are in the "Level_Multipliers.csv" file.  The multiplier for HBP at AAA is 0.82.  So we expect a batter's HBP in AAA to be 82% of his HBP in the majors.  Conversely, we expect a pitcher's HBP in AAA to be increased by $1 / .82 * 100\% = 122\%$ in the majors.  So the way these apps are set up, the pitcher's multiplier is the reciprocal of the batter's multiplier.  Once again, if an MLE for some level is not located in the "Level_Multipliers.csv" file, then the multiplier is assumed to be 1.  So if we do obtain Cuban statistics, until we update the "Level_Multipliers.csv", file, these statistics will be multiplied by 1 to calculate MLEs.
+
+## Additional Notes
+
+### MLBIDs for non-MLB players
+
+This entire process uses a unique identifier for each player.  For players in America, an MLBID is assigned by MLBAM.  Japanese players, however, do not have one.  So I made up "MLBIDs" for Japanese players.  In the cleaning process, a Japanese player's MLBID is set as his last name, first initial, a number (ex. for Yu Darvish it would be DarvishY1).  The number is 1 unless there are multiple players who have the same last name, first initial combination.  
+
+However, some players who played in Japan also played in American and, therefore, have MLBIDs.  The "japan_ids.csv" file in the "data/manual-info" folder is present for this situation.  If there is a player in Japan who already has an MLBID, then list the generated id (called j_id) and his MLBID.  The updating process will then replace his generated id with his MLBID in the rest of the apps.  
+
+If Cuban statistics are included, the user will have to ensure that Cuban players who have not played in America have their own id.
+
+### Updating for 2016
+
+Open the "daily-update.R" file in the "simScoresApp" folder and change `yrs = 2005:2015` to `yrs = 2005:2016`.  When saving this file, MAKE SURE IT IS SAVED AS A `.R` file.  Otherwise the batch file will not work.
+
+### Multiple Players with the Same Name
+
+If there are two players who have the same name, then the app will not know which player to return.  For example, it will not know whether the user wants to find comps for the Orioles Gonzalez; Miguel A. or the Phillies Gonzalez; Miguel A. .  So the names must be changed in the "bio_pit.csv" file so that the two players have different name.  For Miguel Gonzalez, we would change the name of the one on the Phillies to Gonzalez; Miguel Alfredo.
+
+## Summary
+
+- Updating the apps is very simple.  All the user has to do is refresh the statistics from PIA, put the in the "data/0-downloads" folder, then double click "update-apps.bat" file.
+- The user should only change files in the "data/manual-info" folder.
+- The only exception to this occurs if the user wishes to add statistics (say for Cuban players).  The user would then place these statistics in the appropriate folder under "data/1-cleaned".
+- Players with missing information are located in the "data/4-missing" folder.
+
+
+
+
+
+
+
+
+
+
+
